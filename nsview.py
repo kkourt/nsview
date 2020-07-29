@@ -41,16 +41,45 @@ class Namespaces:
             links = get_links(ns_info["nsfs"])
             ns_info["links"] = links
 
+            try:
+                bpf_progs = get_bpf_net_progs(ns_info["nsfs"])[0]
+            except:
+                continue
+
+            for (ty,progl) in bpf_progs.items():
+                for prog in progl:
+                    link1 = links.links_by_ifname[prog["devname"]]
+                    link2 = links.links_by_ifindex[prog["ifindex"]]
+                    assert link1 == link2
+                    progs = link1.get("bpf_progs", [])
+                    progs.append({
+                        "type": ty,
+                        "kind": prog["kind"],
+                        "name": prog["name"],
+                    })
+                    link1["bpf_progs"] = progs
+
     def set_namespaces(self):
         for ns_info in self.namespaces:
             namespaces = get_namespaces(ns_info)
             ns_info["children"] = namespaces
 
+
+
+def get_bpf_net_progs(nsfs):
+    cmd = "sudo $(which nsenter) -n%s $(which bpftool) -j net show" % (nsfs,)
+    ip = sp.run(cmd, shell=True, stdout=sp.PIPE, stderr=sp.PIPE)
+    if ip.returncode != 0:
+        raise RuntimeError("cmd: %s failed (%d)\n%s" % (cmd, ip.returncode, ip.stderr.decode("utf-8")))
+    txt = ip.stdout.decode("utf-8")
+    bpf_progs = json.loads(txt)
+    return bpf_progs
+
 def get_links(nsfs):
     cmd = "sudo $(which nsenter) -n%s $(which ip) -j addr" % (nsfs,)
     ip = sp.run(cmd, shell=True, stdout=sp.PIPE, stderr=sp.PIPE)
     if ip.returncode != 0:
-        raise RuntimeError("cmd: %s failed (%d)\n%s" % (cmd, ip.returncode, ip.stderr.decod("utf-8")))
+        raise RuntimeError("cmd: %s failed (%d)\n%s" % (cmd, ip.returncode, ip.stderr.decode("utf-8")))
     txt = ip.stdout.decode("utf-8")
     links = Links(json.loads(txt))
     return links
@@ -65,7 +94,7 @@ def get_namespaces(ns=None):
     cmd = "%s $(which lsns) --json -t net" % (prefix,)
     lsns = sp.run(cmd, shell=True, stdout=sp.PIPE, stderr=sp.PIPE)
     if lsns.returncode != 0:
-        raise RuntimeError("cmd: %s failed (%d)\n%s" % (cmd, lsns.returncode, lsns.stderr.decod("utf-8")))
+        raise RuntimeError("cmd: %s failed (%d)\n%s" % (cmd, lsns.returncode, lsns.stderr.decode("utf-8")))
     txt = lsns.stdout.decode("utf-8")
 
     namespaces = Namespaces(json.loads(txt))
@@ -81,18 +110,26 @@ def write_dot(namespaces):
         f.write("\tgraph [ rankdir=\"LR\" ]\n")
         for ns in namespaces.namespaces:
             f.write("\tsubgraph cluster_%s {\n"  % (ns["ns"],))
-            f.write("\t\tlabel = \" namespace %s \"" %(ns["ns"],))
+            f.write("\t\tlabel = \" namespace %s \"\n" %(ns["ns"],))
+
             for link in ns["links"].links:
                 dotname = "%s-%s" % (ns["ns"], link["ifindex"])
+
                 records = []
-                records.append(("name", link["ifname"]))
+                dotlabel = "<<table border=\"1\" cellborder=\"0\" bgcolor=\"gray\"> "
+                dotlabel += "<tr><td port=\"name\" bgcolor=\"black\"><font color=\"white\">%s</font></td></tr>" % (link["ifname"])
                 for ai in link["addr_info"]:
-                    records.append((ai["family"], ai["local"]))
-                dotlabel = '|'.join("<%s> %s" % (k,v) for (k,v) in records)
+                    dotlabel += "<tr><td align=\"left\">%s/%s</td></tr>" % (ai["family"],ai["local"])
+                for prog in link.get("bpf_progs", []):
+                    v = ("%s-%s-%s") % (prog["type"], prog["kind"], prog["name"])
+                    dotlabel += "<tr><td align=\"left\">%s</td></tr>" % (v,)
+                dotlabel += "</table>>"
 
                 f.write("\t\t\"%s\" [\n"     % (dotname,))
-                f.write("\t\t\tlabel = \"%s\"\n" % (dotlabel, ))
-                f.write("\t\t\tshape = record\n")
+                #f.write("\t\t\tlabel = \"%s\"\n" % (dotlabel, ))
+                f.write("\t\t\tlabel = %s\n" % (dotlabel, ))
+                #f.write("\t\t\tshape = record\n")
+                f.write("\t\t\tshape = plaintext\n")
                 f.write("\t\t]\n")
 
             f.write("\t}\n")
